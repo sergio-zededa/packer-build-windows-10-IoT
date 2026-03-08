@@ -1,0 +1,15 @@
+# Packer build outputs
+build/
+
+# Large images and ISOs
+*.iso
+*.qcow2
+*.iso*
+*.fd
+# Packer caches
+packer_cache/
+
+# Local temp files
+*.log
+*.tmp
+install.sh

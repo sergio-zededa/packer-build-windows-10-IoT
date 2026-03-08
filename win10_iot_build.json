@@ -1,0 +1,139 @@
+{
+  "variables": {
+    "workdir": "{{env `PWD`}}"
+  },
+  "builders": [
+    {
+      "type": "qemu",
+      "vm_name": "windows-10-iot",
+      "iso_url": "file://{{user `workdir`}}/en-us_windows_10_iot_enterprise_ltsc_2021_x64_dvd_257ad90f.iso",
+      "iso_checksum": "none",
+      "memory": 4096,
+      "disk_image": false,
+      "output_directory": "build/os-base",
+      "accelerator": "kvm",
+      "disk_size": 25600,
+      "disk_interface": "ide",
+      "format": "qcow2",
+      "net_device": "e1000",
+      "vnc_bind_address": "0.0.0.0",
+      "boot_command": [
+        "<wait><wait><spacebar>"
+      ],
+      "boot_wait": "5s",
+      "floppy_files": [
+        "./floppy_win10iot/Autounattend.xml",
+        "./floppy_win10iot/enable-winrm.cmd"
+      ],
+      "floppy_dirs": [
+        "./floppy_win10iot"
+      ],
+      "communicator": "winrm",
+      "winrm_username": "Administrator",
+      "winrm_password": "PackerPassw0rd!",
+      "winrm_port": 5985,
+      "winrm_use_ssl": false,
+      "winrm_insecure": true,
+      "winrm_timeout": "6h",
+      "shutdown_command": "powershell -ExecutionPolicy Bypass -Command \"if (-not (Test-Path 'C:\\Windows\\Temp\\cloudbase-init-conf\\Unattend.xml')) { throw 'Unattend.xml missing for Sysprep' }; Remove-Item -Recurse -Force 'C:\\Program Files\\Cloudbase Solutions\\Cloudbase-Init\\log\\*' -ErrorAction SilentlyContinue; & 'C:\\Windows\\System32\\Sysprep\\sysprep.exe' /generalize /shutdown /oobe /unattend:'C:\\Windows\\Temp\\cloudbase-init-conf\\Unattend.xml'\"",
+      "shutdown_timeout": "2h",
+      "headless": true,
+      "qemuargs": [
+        [
+          "-m",
+          "4096M"
+        ],
+        [
+          "-smp",
+          "2"
+        ],
+        [
+          "-netdev",
+          "user,id=rdp0,net=10.0.3.0/24,dhcpstart=10.0.3.15,hostfwd=tcp::3389-:3389,hostfwd=tcp::{{ .SSHHostPort }}-:5985"
+        ],
+        [
+          "-device",
+          "e1000,netdev=rdp0"
+        ]
+      ]
+    }
+  ],
+  "provisioners": [
+    {
+      "type": "file",
+      "source": "{{user `workdir`}}/Scripts/CloudBase-init-Install.ps1",
+      "destination": "C:\\Windows\\Temp\\CloudBase-init-Install.ps1"
+    },
+    {
+      "type": "file",
+      "source": "{{user `workdir`}}/Scripts/prep-sysprep.ps1",
+      "destination": "C:\\Windows\\Temp\\prep-sysprep.ps1"
+    },
+    {
+      "type": "file",
+      "source": "{{user `workdir`}}/Scripts/cloudbase-init-conf",
+      "destination": "C:\\Windows\\Temp"
+    },
+    {
+      "type": "file",
+      "source": "{{user `workdir`}}/Scripts/mount_PV_disk.ps1",
+      "destination": "C:\\Windows\\Temp\\mount_PV_disk.ps1"
+    },
+    {
+      "type": "powershell",
+      "inline": [
+        "$url = 'http://192.168.1.9:8080/drivers/virtio-win.iso'",
+        "$dest = 'C:\\Windows\\Temp\\virtio-win.iso'",
+        "Invoke-WebRequest -Uri $url -OutFile $dest",
+        "$mount = Mount-DiskImage -ImagePath $dest -PassThru",
+        "$drive = ($mount | Get-Volume).DriveLetter + ':'",
+        "$paths = @(",
+        "  'viostor\\w10\\amd64',",
+        "  'vioscsi\\w10\\amd64',",
+        "  'NetKVM\\w10\\amd64',",
+        "  'Balloon\\w10\\amd64',",
+        "  'vioserial\\w10\\amd64'",
+        ")",
+        "foreach ($p in $paths) {",
+        "  $full = Join-Path $drive $p",
+        "  if (Test-Path $full) { pnputil /add-driver \"$full\\*.inf\" /subdirs /install }",
+        "}",
+        "Dismount-DiskImage -ImagePath $dest"
+      ]
+    },
+    {
+      "type": "powershell",
+      "inline": [
+        "Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope LocalMachine -Force",
+        "& 'C:\\Windows\\Temp\\CloudBase-init-Install.ps1'",
+        "& 'C:\\Windows\\Temp\\prep-sysprep.ps1'"
+      ]
+    },
+    {
+      "type": "powershell",
+      "inline": [
+        "New-Item -ItemType Directory -Path 'C:\\Program Files\\Cloudbase Solutions\\Cloudbase-Init\\LocalScripts' -Force -ErrorAction SilentlyContinue",
+        "Copy-Item 'C:\\Windows\\Temp\\mount_PV_disk.ps1' 'C:\\Program Files\\Cloudbase Solutions\\Cloudbase-Init\\LocalScripts\\mount_PV_disk.ps1' -Force"
+      ]
+    },
+    {
+      "type": "powershell",
+      "inline": [
+        "$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"C:\\Program Files\\Cloudbase Solutions\\Cloudbase-Init\\LocalScripts\\mount_PV_disk.ps1\"'",
+        "$trigger = New-ScheduledTaskTrigger -AtStartup",
+        "$principal = New-ScheduledTaskPrincipal -UserID 'NT AUTHORITY\\SYSTEM' -RunLevel Highest",
+        "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable",
+        "Register-ScheduledTask -TaskName 'Mount Additional Disks' -Description 'Automatically mount additional disks on every boot' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force"
+      ]
+    }
+  ],
+  "post-processors": [
+    {
+      "type": "shell-local",
+      "inline": [
+        "qemu-img convert -O qcow2 -c {{user `workdir`}}/build/os-base/windows-10-iot {{user `workdir`}}/build/os-base/windows-10-iot_compressed.qcow2",
+        "rm -f {{user `workdir`}}/build/os-base/windows-10-iot"
+      ]
+    }
+  ]
+}
